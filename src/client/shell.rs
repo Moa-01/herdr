@@ -188,10 +188,11 @@ fn status_icon(
         ) => "●",
         (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Dots, AgentStatus::Unknown) => "·",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
+        // fork: same glyphs as the agent rows (blocked ●, idle •)
+        (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "●",
         (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
         (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
+        (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "•",
         (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
     }
 }
@@ -228,10 +229,11 @@ fn status_color(
 ) -> ratatui::style::Color {
     use crate::api::schema::AgentStatus;
     match status {
-        AgentStatus::Working => palette.yellow,
+        // fork: working aqua, done green, idle muted, so idle never reads as a green alert
+        AgentStatus::Working => palette.teal,
         AgentStatus::Blocked => palette.red,
-        AgentStatus::Done => palette.teal,
-        AgentStatus::Idle => palette.green,
+        AgentStatus::Done => palette.green,
+        AgentStatus::Idle => palette.overlay0,
         AgentStatus::Unknown => palette.overlay0,
     }
 }
