@@ -35,7 +35,46 @@ pub(crate) struct FileTree {
     pub(super) root: Option<PathBuf>,
     expanded: HashSet<PathBuf>,
     listings: HashMap<PathBuf, Vec<FileEntry>>,
+    /// Git state per changed path under `root`, plus each ancestor folder (strongest wins).
+    git: HashMap<PathBuf, GitMark>,
     loaded_at: Option<Instant>,
+}
+
+/// Where a changed file sits on its way to the remote; ordered weakest to strongest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum GitMark {
+    /// Committed but not on the upstream branch yet.
+    Unpushed,
+    /// Staged, waiting for a commit.
+    Staged,
+    /// New file git does not track yet.
+    Untracked,
+    /// Changed in the working tree, not staged.
+    Modified,
+    /// Merge conflict.
+    Conflict,
+}
+
+impl GitMark {
+    fn letter(self) -> &'static str {
+        match self {
+            Self::Unpushed => "↑",
+            Self::Staged => "S",
+            Self::Untracked => "U",
+            Self::Modified => "M",
+            Self::Conflict => "!",
+        }
+    }
+
+    fn color(self, palette: &crate::app::state::Palette) -> ratatui::style::Color {
+        match self {
+            Self::Unpushed => palette.blue,
+            Self::Staged => palette.teal,
+            Self::Untracked => palette.green,
+            Self::Modified => palette.yellow,
+            Self::Conflict => palette.red,
+        }
+    }
 }
 
 pub(super) struct FileRow<'a> {
@@ -65,10 +104,12 @@ impl FileTree {
 
     pub(super) fn reload(&mut self) {
         self.listings.clear();
+        self.git.clear();
         self.loaded_at = Some(Instant::now());
         let Some(root) = self.root.clone() else {
             return;
         };
+        self.git = git_marks(&root);
         self.expanded
             .retain(|dir| dir.starts_with(&root) && dir.is_dir());
         let dirs = std::iter::once(root)
@@ -115,6 +156,7 @@ impl FileTree {
         Self {
             root: Some(root),
             listings: listings.into_iter().collect(),
+            git: HashMap::new(),
             loaded_at: Some(Instant::now()),
             ..Self::default()
         }
@@ -148,6 +190,79 @@ fn read_dir_sorted(dir: &Path) -> Vec<FileEntry> {
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     entries
+}
+
+// ponytail: three blocking git calls per reload (every 2s at most); move to a thread if a
+// huge repo makes the sidebar stutter.
+fn git_marks(root: &Path) -> HashMap<PathBuf, GitMark> {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("--no-optional-locks")
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    // Status paths are repo-relative; the prefix maps them onto `root` without
+    // caring whether `root` was reached through a symlink.
+    let Some(prefix) = git(&["rev-parse", "--show-prefix"]) else {
+        return HashMap::new();
+    };
+    let status =
+        git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default();
+    // No upstream (or no commits) simply means no unpushed marks.
+    let unpushed = git(&["diff", "--name-only", "-z", "@{upstream}...HEAD"]).unwrap_or_default();
+    let mut changes = parse_status(&status);
+    changes.extend(
+        unpushed
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(|path| (path.to_string(), GitMark::Unpushed)),
+    );
+    let mut marks = HashMap::new();
+    for (path, mark) in changes {
+        let Some(relative) = path.strip_prefix(prefix.trim_end()) else {
+            continue;
+        };
+        let mut current = root.join(relative);
+        while current.starts_with(root) && current != root {
+            let slot = marks.entry(current.clone()).or_insert(mark);
+            *slot = (*slot).max(mark);
+            if !current.pop() {
+                break;
+            }
+        }
+    }
+    marks
+}
+
+/// `git status --porcelain=v1 -z` entries as (repo-relative path, mark).
+fn parse_status(status: &str) -> Vec<(String, GitMark)> {
+    let mut fields = status.split('\0').filter(|field| !field.is_empty());
+    let mut changes = Vec::new();
+    while let Some(field) = fields.next() {
+        let (Some(code), Some(path)) = (field.get(..2), field.get(3..)) else {
+            continue;
+        };
+        let (index, worktree) = (code.as_bytes()[0], code.as_bytes()[1]);
+        // Renames and copies carry their old path as the next field.
+        if matches!(index, b'R' | b'C') {
+            fields.next();
+        }
+        let mark = match (index, worktree) {
+            (b'?', b'?') => GitMark::Untracked,
+            (b'U', _) | (_, b'U') | (b'A', b'A') | (b'D', b'D') => GitMark::Conflict,
+            (_, worktree) if worktree != b' ' => GitMark::Modified,
+            _ => GitMark::Staged,
+        };
+        changes.push((path.to_string(), mark));
+    }
+    changes
 }
 
 /// The focused pane's directory: where its foreground process runs, else its shell cwd.
@@ -266,15 +381,39 @@ pub(super) fn render_file_panel(
             marker,
             Style::default().fg(palette.overlay0),
         );
-        let room = rect.right().saturating_sub(x) as usize;
+        let mark = tree.git.get(&row.entry.path).copied();
+        let name_style = match mark {
+            Some(mark) => name_style.fg(mark.color(palette)),
+            None => name_style,
+        };
+        // Leave two columns for the status letter at the row's end.
+        let name_end = rect
+            .right()
+            .saturating_sub(if mark.is_some() { 2 } else { 0 });
+        let room = name_end.saturating_sub(x) as usize;
         render::put_segment(
             buffer,
             x,
             rect.y,
-            rect.right(),
+            name_end,
             &crate::ui::truncate_end(&row.entry.name, room),
             name_style,
         );
+        if let Some(mark) = mark {
+            // Folders show a dot like VS Code; files show their status letter.
+            let label = if row.entry.is_dir {
+                "•"
+            } else {
+                mark.letter()
+            };
+            render::put_right_text(
+                buffer,
+                rect,
+                rect.y,
+                &format!("{label} "),
+                Style::default().fg(mark.color(palette)),
+            );
+        }
         hits.files
             .push((rect, row.entry.path.clone(), row.entry.is_dir));
     }
@@ -475,6 +614,78 @@ mod tests {
             .collect::<Vec<_>>();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(names, vec!["zeta", "Alpha.txt", "beta.txt"]);
+    }
+
+    #[test]
+    fn status_maps_each_stage_to_a_mark() {
+        let status = " M a.rs\0M  b.rs\0MM c.rs\0?? d.rs\0UU e.rs\0R  new.rs\0old.rs\0";
+        assert_eq!(
+            parse_status(status),
+            vec![
+                ("a.rs".into(), GitMark::Modified),
+                ("b.rs".into(), GitMark::Staged),
+                ("c.rs".into(), GitMark::Modified),
+                ("d.rs".into(), GitMark::Untracked),
+                ("e.rs".into(), GitMark::Conflict),
+                ("new.rs".into(), GitMark::Staged),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_marks_follow_a_file_from_edit_to_push() {
+        let base = std::env::temp_dir().join(format!("herdr-file-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let work = base.join("work");
+        let run = |dir: &Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env_remove("GIT_DIR")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        std::fs::create_dir_all(work.join("src")).unwrap();
+        if !run(&base, &["init", "-q", "--bare", "remote.git"])
+            || !run(&work, &["init", "-q", "-b", "main"])
+        {
+            std::fs::remove_dir_all(&base).unwrap();
+            return; // no git available
+        }
+        std::fs::write(work.join("src/lib.rs"), "a").unwrap();
+        let file = work.join("src/lib.rs");
+        let mark = |path: &Path| git_marks(&work).get(path).copied();
+
+        assert_eq!(mark(&file), Some(GitMark::Untracked));
+        assert_eq!(mark(&work.join("src")), Some(GitMark::Untracked));
+        assert!(run(&work, &["add", "."]));
+        assert_eq!(mark(&file), Some(GitMark::Staged));
+        assert!(run(&work, &["commit", "-qm", "one"]));
+        assert!(run(&work, &["remote", "add", "origin", "../remote.git"]));
+        assert!(run(&work, &["push", "-q", "-u", "origin", "main"]));
+        assert_eq!(mark(&file), None);
+        std::fs::write(&file, "b").unwrap();
+        assert_eq!(mark(&file), Some(GitMark::Modified));
+        assert!(run(&work, &["commit", "-qam", "two"]));
+        assert_eq!(mark(&file), Some(GitMark::Unpushed));
+        // A folder opened as the root still maps repo-relative paths onto itself.
+        assert_eq!(
+            git_marks(&work.join("src")).get(&file).copied(),
+            Some(GitMark::Unpushed)
+        );
+        assert!(run(&work, &["push", "-q"]));
+        assert_eq!(mark(&file), None);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

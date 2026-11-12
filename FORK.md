@@ -13,6 +13,10 @@ Stock herdr plus a foldable, workspace-grouped agent panel. Work lives on the
   to expand it, click a file to open it in `$VISUAL`/`$EDITOR` (default `vi`) beside
   the focused pane, or in a new tab when a split would leave a half under 60 columns.
   Click the `files` title to refresh; it also refreshes every few seconds.
+- Files are colored by git state, with a letter on the right (folders get a dot in
+  the color of their most urgent change): yellow `M` modified and not staged, green
+  `U` untracked, teal `S` staged, blue `↑` committed but not pushed, red `!` merge
+  conflict. Once the commit is pushed, the file goes back to its normal color.
 
 ## Updating
 
