@@ -12,6 +12,51 @@ fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
     }
 }
 
+/// fork: a background tint per space, shared by that space's agent rows; `strong` marks the
+/// focused row. Needs RGB colors to blend, so ANSI-only themes keep the plain rows.
+pub(in crate::client::shell) fn space_tint(
+    palette: &Palette,
+    index: usize,
+    strong: bool,
+) -> Option<ratatui::style::Color> {
+    use ratatui::style::Color;
+    let rgb = |color: Color| match color {
+        Color::Rgb(red, green, blue) => Some([red, green, blue]),
+        _ => None,
+    };
+    let base = [palette.sidebar_bg, palette.panel_bg]
+        .into_iter()
+        .find_map(rgb)?;
+    let hues = [
+        palette.blue,
+        palette.green,
+        palette.mauve,
+        palette.peach,
+        palette.teal,
+        palette.yellow,
+    ];
+    let hue = rgb(hues[index % hues.len()])?;
+    let amount = if strong { 0.32 } else { 0.14 };
+    let [red, green, blue] = std::array::from_fn(|channel| {
+        let (from, to) = (f32::from(base[channel]), f32::from(hue[channel]));
+        (from + (to - from) * amount).round() as u8
+    });
+    Some(Color::Rgb(red, green, blue))
+}
+
+pub(in crate::client::shell) fn space_tint_for(
+    snapshot: &ClientShellSnapshot,
+    workspace_id: &str,
+    palette: &Palette,
+    strong: bool,
+) -> Option<ratatui::style::Color> {
+    let index = snapshot
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id == workspace_id)?;
+    space_tint(palette, index, strong)
+}
+
 pub(in crate::client::shell) fn workspace_active_background(
     palette: &Palette,
     navigating: bool,
@@ -211,31 +256,7 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
-    put_text(
-        buffer,
-        workspace_area.x,
-        workspace_area.y,
-        workspace_area.width,
-        " spaces",
-        Style::default()
-            .fg(palette.overlay0)
-            .add_modifier(Modifier::BOLD),
-    );
-
     let entries = workspace_entries(snapshot, state.collapsed_groups);
-    let body = Rect::new(
-        workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
-    );
-    hits.workspace_body = body;
     let row_heights = entries
         .iter()
         .map(|entry| {
@@ -265,6 +286,51 @@ pub(crate) fn render_sidebar(
                 .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
         })
         .collect::<Vec<_>>();
+    // Header, rows, one spare row (the drop slot after the last space) and the footer.
+    let spaces_needed = row_heights
+        .iter()
+        .chain(&gaps)
+        .fold(WORKSPACE_HEADER_ROWS + 2, |total, rows| {
+            total.saturating_add(*rows)
+        });
+    let agents_needed = super::agent_sidebar::agent_panel_height(
+        snapshot,
+        config,
+        state.collapsed_agent_workspaces,
+    );
+    let file_tree = state.file_tree.filter(|tree| tree.root.is_some());
+    let (workspace_area, detail_area, file_area) = local_sidebar_sections(
+        area,
+        state.sidebar_section_split,
+        spaces_needed,
+        agents_needed,
+        file_tree.is_some(),
+    );
+    hits.sidebar_section_divider = if area.height < 6 || detail_area.is_empty() {
+        Rect::default()
+    } else {
+        Rect::new(detail_area.x, detail_area.y, detail_area.width, 1)
+    };
+    put_text(
+        buffer,
+        workspace_area.x,
+        workspace_area.y,
+        workspace_area.width,
+        " spaces",
+        Style::default()
+            .fg(palette.overlay0)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let body = Rect::new(
+        workspace_area.x,
+        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
+        workspace_area.width,
+        workspace_area
+            .height
+            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+    );
+    hits.workspace_body = body;
     let mut metrics = super::scroll::list_scroll_metrics(
         &row_heights,
         &gaps,
@@ -330,8 +396,12 @@ pub(crate) fn render_sidebar(
             rows,
             workspace.focused,
             selected,
-            state.selected_workspace_id.is_some(),
             dragged,
+            space_tint(palette, entry.index, workspace.focused).or_else(|| {
+                workspace.focused.then(|| {
+                    workspace_active_background(palette, state.selected_workspace_id.is_some())
+                })
+            }),
             palette,
         );
         let group_toggle = render_parent_group_toggle(
@@ -439,6 +509,16 @@ pub(crate) fn render_sidebar(
         state.agent_scroll,
         hits,
     );
+    if let Some(tree) = file_tree {
+        super::super::file_tree::render_file_panel(
+            buffer,
+            file_area,
+            tree,
+            state.file_scroll,
+            config,
+            hits,
+        );
+    }
 
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
@@ -454,6 +534,43 @@ pub(crate) fn render_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// fork: the spaces section sizes to its content, capped by the dragged split; agents take
+/// what they need from the rest while files keep at least two fifths of it.
+pub(in crate::client::shell) fn local_sidebar_sections(
+    area: Rect,
+    split_ratio: f32,
+    spaces_needed: u16,
+    agents_needed: u16,
+    files: bool,
+) -> (Rect, Rect, Rect) {
+    const MIN_AGENT_ROWS: u16 = 4;
+    const MIN_FILE_ROWS: u16 = 6;
+    let (spaces_max, detail) = crate::ui::expanded_sidebar_sections(area, split_ratio);
+    if spaces_max.is_empty() {
+        return (Rect::default(), Rect::default(), Rect::default());
+    }
+    let content = spaces_max.union(detail);
+    let spaces_height = if content.height < 6 {
+        spaces_max.height
+    } else {
+        spaces_needed.clamp(3, spaces_max.height.max(3))
+    };
+    let rest = content.height.saturating_sub(spaces_height);
+    let agents_height = if !files || rest < MIN_AGENT_ROWS + MIN_FILE_ROWS {
+        rest
+    } else {
+        let cap = rest - MIN_FILE_ROWS.max(rest * 2 / 5);
+        agents_needed.clamp(MIN_AGENT_ROWS.min(cap), cap)
+    };
+    let row =
+        |offset: u16, height: u16| Rect::new(content.x, content.y + offset, content.width, height);
+    (
+        row(0, spaces_height),
+        row(spaces_height, agents_height),
+        row(spaces_height + agents_height, rest - agents_height),
+    )
 }
 
 pub(crate) fn workspace_entries(
@@ -699,8 +816,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
     focused: bool,
     selected: bool,
-    navigating: bool,
     dragged: bool,
+    // Resting background when neither selected nor dragged (focus or the space tint).
+    background: Option<ratatui::style::Color>,
     palette: &Palette,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
@@ -774,10 +892,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
         Some(workspace_selection_background(palette))
     } else if dragged {
         Some(palette.surface1)
-    } else if focused {
-        Some(workspace_active_background(palette, navigating))
     } else {
-        None
+        background
     };
     if let Some(background) = background {
         for y in area.y..area.bottom() {
@@ -785,5 +901,48 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 buffer[(x, y)].set_bg(background);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spaces_shrink_to_content_and_files_keep_a_share() {
+        let area = Rect::new(0, 0, 31, 60);
+        let (spaces, agents, files) = local_sidebar_sections(area, 0.5, 9, 40, true);
+        assert_eq!((spaces.y, spaces.height), (0, 9));
+        // Agents need more than they get, so files keep two fifths of the 51-row rest.
+        assert_eq!((agents.y, agents.height), (9, 31));
+        assert_eq!((files.y, files.height), (40, 20));
+        assert_eq!(spaces.width, 30);
+    }
+
+    #[test]
+    fn spaces_stop_at_the_dragged_split_and_spare_agent_rows_go_to_files() {
+        let area = Rect::new(0, 0, 31, 60);
+        let (spaces, agents, files) = local_sidebar_sections(area, 0.25, 200, 6, true);
+        assert_eq!(spaces.height, 15);
+        assert_eq!(agents.height, 6);
+        assert_eq!(files.height, 39);
+    }
+
+    #[test]
+    fn agents_take_the_rest_without_files() {
+        let area = Rect::new(0, 0, 31, 60);
+        let (spaces, agents, files) = local_sidebar_sections(area, 0.5, 9, 4, false);
+        assert_eq!(spaces.height + agents.height, 60);
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn space_tint_blends_toward_the_hue_and_cycles() {
+        let palette = Palette::gruvbox();
+        let soft = space_tint(&palette, 0, false);
+        let strong = space_tint(&palette, 0, true);
+        assert_ne!(soft, strong);
+        assert_eq!(space_tint(&palette, 6, false), soft);
+        assert_ne!(space_tint(&palette, 1, false), soft);
     }
 }

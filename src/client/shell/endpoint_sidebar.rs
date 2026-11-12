@@ -477,8 +477,13 @@ pub(super) fn render_expanded(
                     tokens,
                     endpoint_active && workspace.focused,
                     selected,
-                    state.selected_workspace_id.is_some(),
                     false,
+                    (endpoint_active && workspace.focused).then(|| {
+                        super::sidebar::workspace_active_background(
+                            palette,
+                            state.selected_workspace_id.is_some(),
+                        )
+                    }),
                     palette,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {

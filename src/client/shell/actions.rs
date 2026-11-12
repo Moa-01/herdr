@@ -639,6 +639,7 @@ impl ClientShellState {
                     }
                 };
             }
+            PendingEndpointKind::OpenFile { path } => return self.complete_open_file(path, result),
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);

@@ -237,6 +237,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) collapsed_groups: &'a HashSet<String>,
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) collapsed_agent_workspaces: &'a HashSet<String>,
+    pub(super) file_tree: Option<&'a super::file_tree::FileTree>,
+    pub(super) file_scroll: &'a mut usize,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
     pub(super) tab_scroll: &'a mut usize,
@@ -333,6 +335,8 @@ pub(super) fn render_shell(
         hits.workspaces.clear();
         hits.agents.clear();
         hits.agent_groups.clear();
+        hits.files.clear();
+        hits.file_header = Rect::default();
         hits.endpoint_agents.clear();
         hits.tab_scroll_left = Rect::default();
         hits.tab_scroll_right = Rect::default();

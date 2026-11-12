@@ -1777,3 +1777,85 @@ fn folded_workspace_is_a_single_agent_navigation_stop() {
         3
     );
 }
+
+/// fork: the file panel follows the focused pane's directory; a file opens beside the
+/// focused pane when both halves stay readable, otherwise in its own tab, then the editor
+/// starts in the pane the server created.
+#[test]
+fn file_panel_opens_files_in_a_split_or_a_new_tab() {
+    let dir = std::env::temp_dir().join(format!("herdr-file-panel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("notes.md"), "").unwrap();
+    let mut projected = snapshot();
+    projected.panes[0].cwd = Some(dir.display().to_string());
+    projected.panes[0].foreground_cwd = None;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    for (pane_width, expect_split) in [(200, true), (100, false)] {
+        state.compose(106, 40).expect("sidebar with files");
+        let (file, _, _) = state
+            .hits
+            .files
+            .iter()
+            .find(|(_, path, is_dir)| path.ends_with("notes.md") && !is_dir)
+            .cloned()
+            .expect("file row");
+        assert!(
+            state.hits.files[0].1.ends_with("src") && state.hits.files[0].2,
+            "directories first"
+        );
+        state.hits.panes[0].rect.width = pane_width;
+        let click = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: file.x + 3,
+            row: file.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        let [ClientShellAction::Endpoint { request, .. }] = click.actions.as_slice() else {
+            panic!("one open request, got {:?}", click.actions.len());
+        };
+        let result = match &request.method {
+            crate::api::schema::Method::PaneSplit(params) => {
+                assert!(expect_split);
+                assert_eq!(params.target_pane_id.as_deref(), Some("pane_1"));
+                assert_eq!(params.direction, crate::api::schema::SplitDirection::Right);
+                crate::api::schema::ResponseResult::PaneInfo {
+                    pane: serde_json::from_value(serde_json::json!({
+                        "pane_id": "pane_9", "terminal_id": "t", "workspace_id": "ws_1",
+                        "tab_id": "tab_1", "focused": true, "agent_status": "idle",
+                        "revision": 1,
+                    }))
+                    .unwrap(),
+                }
+            }
+            crate::api::schema::Method::TabCreate(params) => {
+                assert!(!expect_split);
+                assert_eq!(params.label.as_deref(), Some("notes.md"));
+                serde_json::from_value(serde_json::json!({
+                    "type": "tab_created",
+                    "tab": { "tab_id": "tab_2", "workspace_id": "ws_1", "number": 2,
+                             "label": "notes.md", "focused": true, "pane_count": 1,
+                             "agent_status": "idle" },
+                    "root_pane": { "pane_id": "pane_9", "terminal_id": "t",
+                                   "workspace_id": "ws_1", "tab_id": "tab_2", "focused": true,
+                                   "agent_status": "idle", "revision": 1 },
+                }))
+                .unwrap()
+            }
+            other => panic!("unexpected open request {other:?}"),
+        };
+        let (_, actions) = state.handle_endpoint_result("boot-1", &request.id, Ok(result));
+        let [ClientShellAction::Endpoint { request, .. }] = actions.as_slice() else {
+            panic!("editor launch follows the new pane");
+        };
+        assert!(matches!(&request.method,
+            crate::api::schema::Method::PaneSendInput(params)
+                if params.pane_id == "pane_9"
+                    && params.text.ends_with("notes.md'")
+                    && params.keys == ["Enter"]));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -357,6 +357,16 @@ fn sidebar_toggle_remains_clickable_with_overflowing_agents() {
             let (mut state, _) = state_with_scrollable_agents();
             if !saved_machine {
                 state.set_endpoint_catalog(&[]);
+                // The single-machine sidebar sizes spaces to their content, so it
+                // needs more agents than the fixture to overflow.
+                let mut projection = state.snapshot.as_deref().unwrap().clone();
+                projection
+                    .agents
+                    .extend((8..20).map(|index| ClientShellAgent {
+                        pane_id: format!("pane_{}", index + 1),
+                        ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
+                    }));
+                state.set_snapshot(Box::new(projection));
             }
             state.agent_scroll = if scroll_to_bottom { usize::MAX } else { 0 };
             let frame = state.compose(100, 28).expect("overflowing agent panel");

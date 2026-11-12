@@ -95,6 +95,10 @@ pub(super) struct ShellHitMap {
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
     pub(super) agent_groups: Vec<(Rect, String)>,
+    pub(super) files: Vec<(Rect, std::path::PathBuf, bool)>,
+    pub(super) file_header: Rect,
+    pub(super) file_body: Rect,
+    pub(super) file_max_scroll: usize,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -656,6 +660,9 @@ pub(super) enum PendingEndpointKind {
     PaneLinkResolve {
         target: super::link_hover::LinkHoverTarget,
     },
+    OpenFile {
+        path: std::path::PathBuf,
+    },
     PaneLinkActivate {
         pane_id: String,
         inner_rect: Rect,
@@ -884,6 +891,8 @@ pub(crate) struct ClientShellState {
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) collapsed_agent_workspaces: HashSet<String>,
+    pub(super) file_tree: super::file_tree::FileTree,
+    pub(super) file_scroll: usize,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1062,6 +1071,8 @@ impl ClientShellState {
                 .collapsed_agent_workspaces
                 .into_iter()
                 .collect(),
+            file_tree: Default::default(),
+            file_scroll: 0,
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -1598,6 +1609,7 @@ impl ClientShellState {
             }
         }
         self.snapshot = Some(snapshot);
+        self.sync_file_tree();
         self.reconcile_pending_workspace_highlight();
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {

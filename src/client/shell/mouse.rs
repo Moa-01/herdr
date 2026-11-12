@@ -1895,6 +1895,23 @@ impl ClientShellState {
                     outcome,
                 );
             }
+            MouseEventKind::ScrollUp if super::contains(self.hits.file_body, point) => {
+                let next = self.file_scroll.saturating_sub(1);
+                if next != self.file_scroll {
+                    self.file_scroll = next;
+                    outcome.repaint = true;
+                }
+            }
+            MouseEventKind::ScrollDown if super::contains(self.hits.file_body, point) => {
+                let next = self
+                    .file_scroll
+                    .saturating_add(1)
+                    .min(self.hits.file_max_scroll);
+                if next != self.file_scroll {
+                    self.file_scroll = next;
+                    outcome.repaint = true;
+                }
+            }
             MouseEventKind::ScrollUp if super::contains(self.hits.agent_body, point) => {
                 let next = self.agent_scroll.saturating_sub(1);
                 if next != self.agent_scroll {
@@ -2142,6 +2159,9 @@ impl ClientShellState {
                     return;
                 }
                 if self.handle_endpoint_agent_click(point, outcome) {
+                    return;
+                }
+                if self.handle_file_click(point, outcome) {
                     return;
                 }
                 let agent_group = self

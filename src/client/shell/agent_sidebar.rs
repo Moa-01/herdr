@@ -70,6 +70,7 @@ pub(super) fn render_agent_panel(
     }
 
     let entries = agent_panel_entries(snapshot, config, collapsed);
+    let palette = &config.palette;
     let grouped = entries
         .iter()
         .any(|entry| matches!(entry, AgentPanelEntry::Group(_)));
@@ -84,23 +85,54 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |entry| match entry {
-            AgentPanelEntry::Group(header) => 1 + usize::from(!header.first),
-            AgentPanelEntry::Agent(row) => row.rows.len(),
-        },
+        agent_entry_lines,
         |buffer, rect, entry, hits| match entry {
             AgentPanelEntry::Group(header) => {
                 // Groups after the first carry one blank spacer line above the header.
                 let line = Rect::new(rect.x, rect.bottom().saturating_sub(1), rect.width, 1);
                 hits.agent_groups.push((line, header.workspace_id.clone()));
-                render_agent_group(buffer, line, header, config);
+                let tint = super::render::sidebar::space_tint_for(
+                    snapshot,
+                    &header.workspace_id,
+                    palette,
+                    header.focused,
+                );
+                render_agent_group(buffer, line, header, config, tint);
             }
             AgentPanelEntry::Agent(row) => {
                 hits.agents.push((rect, row.pane_id.clone()));
-                render_agent_row(buffer, rect, row, config, if grouped { 2 } else { 0 });
+                let tint = super::render::sidebar::space_tint_for(
+                    snapshot,
+                    &row.workspace_id,
+                    palette,
+                    row.focused,
+                );
+                render_agent_row(buffer, rect, row, config, if grouped { 2 } else { 0 }, tint);
             }
         },
     );
+}
+
+fn agent_entry_lines(entry: &AgentPanelEntry) -> usize {
+    match entry {
+        AgentPanelEntry::Group(header) => 1 + usize::from(!header.first),
+        AgentPanelEntry::Agent(row) => row.rows.len(),
+    }
+}
+
+/// fork: rows the agent panel needs to show every entry without scrolling.
+pub(super) fn agent_panel_height(
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    collapsed: &HashSet<String>,
+) -> u16 {
+    let entries = agent_panel_entries(snapshot, config, collapsed);
+    let lines = entries
+        .iter()
+        .map(|entry| agent_entry_lines(entry).max(1))
+        .sum::<usize>()
+        + entries.len().saturating_sub(1) * usize::from(config.agents.row_gap);
+    (3 + lines.max(1)).min(u16::MAX as usize) as u16
 }
 
 /// Workspace header in the grouped agent panel. Folded headers summarize their agents.
@@ -202,6 +234,7 @@ fn render_agent_group(
     rect: Rect,
     header: &AgentGroupHeader,
     config: &ClientShellConfig,
+    tint: Option<ratatui::style::Color>,
 ) {
     let palette = &config.palette;
     let mut spans = vec![
@@ -235,7 +268,9 @@ fn render_agent_group(
             ));
         }
     }
-    let style = if header.focused {
+    let style = if let Some(tint) = tint {
+        Style::default().bg(tint)
+    } else if header.focused {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
@@ -483,9 +518,12 @@ pub(super) fn render_agent_row(
     row: &AgentRow,
     config: &ClientShellConfig,
     group_indent: usize,
+    tint: Option<ratatui::style::Color>,
 ) {
     let palette = &config.palette;
-    let row_style = if row.focused {
+    let row_style = if let Some(tint) = tint {
+        Style::default().bg(tint)
+    } else if row.focused {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
