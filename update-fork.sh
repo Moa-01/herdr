@@ -39,7 +39,9 @@ env -u HERDR_SOCKET_PATH -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_TAB_ID -u HERDR_
 cp -p "$BIN" "$BIN-previous"
 cp target/release/herdr "$BIN.new" && mv "$BIN.new" "$BIN"
 git push origin "$BRANCH"
-herdr server live-handoff
+# --import-exe: the running server's own exe was just replaced (shows as "(deleted)"),
+# so point the handoff at the new binary explicitly.
+herdr server live-handoff --import-exe "$BIN"
 echo
 echo "installed $(herdr --version) (previous kept at $BIN-previous)"
 echo "reconnect your window to load the new sidebar: ctrl+j q, then herdr"
