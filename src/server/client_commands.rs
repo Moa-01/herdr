@@ -32,6 +32,8 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.resize",
     "pane.scroll",
     "pane.selection.read",
+    // fork: the file panel types the editor command into the pane it opens.
+    "pane.send_input",
     "pane.split",
     "pane.swap",
     "pane.zoom",
@@ -292,6 +294,10 @@ mod tests {
         assert_eq!(
             actual.remove("pane.clear").as_deref(),
             Some("0301d288ba198ddaa427dd7421c71911cccaf4ea03544531efa8b67ca21b08f6")
+        );
+        assert_eq!(
+            actual.remove("pane.send_input").as_deref(),
+            Some("b0984bc72d68f720d07555147e6a8f14d6f7cf75376e6a3da3a393ca8f2e29a7")
         );
         assert_eq!(
             actual.remove("pane.link.resolve").as_deref(),

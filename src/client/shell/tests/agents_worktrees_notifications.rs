@@ -1793,6 +1793,13 @@ fn file_panel_opens_files_in_a_split_or_a_new_tab() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
+    // Only what a real server advertises to the TUI, so a missing method fails here.
+    state.set_endpoint_methods(Some(
+        crate::server::client_commands::supported_client_shell_method_names()
+            .iter()
+            .map(|method| (*method).to_owned())
+            .collect(),
+    ));
 
     for (pane_width, expect_split) in [(200, true), (100, false)] {
         state.compose(106, 40).expect("sidebar with files");
