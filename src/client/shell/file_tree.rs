@@ -423,12 +423,44 @@ pub(super) fn render_file_panel(
     }
 }
 
-/// Shell line that replaces the new pane's shell with the user's editor on `path`.
-/// Single-quoted arguments read the same in POSIX shells and fish.
-pub(super) fn editor_command(path: &Path) -> String {
+/// Shell line typed into the new pane to open `path` in the user's editor and close
+/// the pane when the editor exits. `shell` is `[terminal] default_shell`; empty means
+/// the platform default, which is PowerShell on Windows.
+pub(super) fn editor_command(path: &Path, shell: &str, windows: bool) -> String {
+    let path = path.display().to_string();
+    if is_powershell(shell, windows) {
+        return powershell_editor_command(&path);
+    }
+    // Single-quoted arguments read the same in POSIX shells and fish.
     format!(
         "exec sh -c '${{VISUAL:-${{EDITOR:-vi}}}} \"$1\"' sh {}",
-        shell_quote(&path.display().to_string())
+        shell_quote(&path)
+    )
+}
+
+fn is_powershell(shell: &str, windows: bool) -> bool {
+    let shell = shell.trim();
+    if shell.is_empty() {
+        return windows;
+    }
+    // Last path component first, so `C:\Program Files\...\pwsh.exe` survives its space.
+    let tail = shell.rsplit(['/', '\\']).next().unwrap_or(shell);
+    let name = tail.split_whitespace().next().unwrap_or("");
+    let name = name.trim_matches(['"', '\'']).to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    matches!(name, "pwsh" | "powershell")
+}
+
+/// Runs under Windows PowerShell 5.1 and PowerShell 7. Editor: `$VISUAL`, then
+/// `$EDITOR`, then Windows' terminal `edit`, then `notepad`. An editor value that is
+/// not itself a command (`code --wait`) is split into program and arguments. The pane
+/// closes only when the editor succeeds, so a failure stays readable.
+fn powershell_editor_command(path: &str) -> String {
+    format!(
+        "$e = $env:VISUAL, $env:EDITOR, $(if (Get-Command edit -ErrorAction Ignore) {{ 'edit' }} else {{ 'notepad' }}) | Where-Object {{ $_ }} | Select-Object -First 1; \
+         $a = @(if (Get-Command $e -ErrorAction Ignore) {{ $e }} else {{ -split $e }}); \
+         & $a[0] @($a | Select-Object -Skip 1) '{}'; if ($?) {{ exit }}",
+        path.replace('\'', "''")
     )
 }
 
@@ -540,7 +572,7 @@ impl ClientShellState {
         self.push_endpoint_method(
             Method::PaneSendInput(PaneSendInputParams {
                 pane_id,
-                text: editor_command(&path),
+                text: editor_command(&path, &self.config.default_shell, cfg!(windows)),
                 keys: vec!["Enter".into()],
             }),
             &mut outcome,
@@ -691,8 +723,30 @@ mod tests {
     #[test]
     fn editor_command_quotes_the_path() {
         assert_eq!(
-            editor_command(Path::new("/tmp/it's here.rs")),
+            editor_command(Path::new("/tmp/it's here.rs"), "", false),
             r#"exec sh -c '${VISUAL:-${EDITOR:-vi}} "$1"' sh '/tmp/it'\''s here.rs'"#
+        );
+    }
+
+    #[test]
+    fn editor_command_follows_the_pane_shell() {
+        let path = Path::new(r"C:\work\it's.rs");
+        let powershell = |shell: &str, windows: bool| {
+            editor_command(path, shell, windows).ends_with(r"'C:\work\it''s.rs'; if ($?) { exit }")
+        };
+        assert!(powershell("", true));
+        assert!(powershell("pwsh.exe", true));
+        assert!(powershell(r"C:\Program Files\PowerShell\7\pwsh.exe", true));
+        assert!(powershell("powershell -NoLogo", false));
+        assert!(powershell(
+            r#""C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo"#,
+            true
+        ));
+        assert!(!powershell("", false));
+        assert!(!powershell("bash", true));
+        assert!(
+            editor_command(path, r"C:\Program Files\Git\bin\bash.exe", true)
+                .starts_with("exec sh -c")
         );
     }
 }

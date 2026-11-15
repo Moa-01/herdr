@@ -46,6 +46,9 @@ pub(crate) struct ClientShellConfig {
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) switch_ascii_input_source_in_prefix: bool,
+    /// `[terminal] default_shell`, so the files panel can type its editor command in
+    /// the syntax of the shell the new pane runs.
+    pub(super) default_shell: String,
     pub(super) local_config_path: std::path::PathBuf,
     pub(super) preferences_path: Option<std::path::PathBuf>,
     pub(super) preferences: preferences::ClientChromePreferences,

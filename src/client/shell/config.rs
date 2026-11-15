@@ -161,6 +161,7 @@ impl ClientShellConfig {
             switch_ascii_input_source_in_prefix: config
                 .experimental
                 .switch_ascii_input_source_in_prefix,
+            default_shell: config.terminal.default_shell.clone(),
             local_config_path: crate::config::config_path(),
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default(),
@@ -384,6 +385,9 @@ impl ClientShellConfig {
         if !invalid_section("experimental") {
             self.switch_ascii_input_source_in_prefix =
                 config.experimental.switch_ascii_input_source_in_prefix;
+        }
+        if !invalid_section("terminal") {
+            self.default_shell = config.terminal.default_shell.clone();
         }
 
         diagnostics
