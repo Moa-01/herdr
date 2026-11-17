@@ -100,6 +100,7 @@ pub(super) struct ShellHitMap {
     pub(super) agent_groups: Vec<(Rect, String)>,
     pub(super) files: Vec<(Rect, std::path::PathBuf, bool)>,
     pub(super) file_header: Rect,
+    pub(super) file_open_dir: Rect,
     pub(super) file_body: Rect,
     pub(super) file_max_scroll: usize,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
@@ -256,6 +257,8 @@ pub(crate) enum ClientShellAction {
     },
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
+    /// fork: show a local folder in the system file manager.
+    OpenLocalPath(std::path::PathBuf),
     ActivateEndpoint {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,

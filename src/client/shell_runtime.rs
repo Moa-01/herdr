@@ -55,6 +55,14 @@ pub(super) fn dispatch_client_shell_actions(
                     }
                 }
             }
+            shell::ClientShellAction::OpenLocalPath(path) => {
+                // xdg-open, Explorer (ShellExecuteW) or `open` show a folder in the file manager.
+                match crate::platform::open_url(&path.to_string_lossy()) {
+                    Ok(Some(child)) => detached_process_children.push(child),
+                    Ok(None) => {}
+                    Err(err) => warn!(err = %err, path = %path.display(), "failed to open folder"),
+                }
+            }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
             shell::ClientShellAction::Keybind(action) => {
                 debug!(

@@ -337,6 +337,7 @@ pub(super) fn render_shell(
         hits.agent_groups.clear();
         hits.files.clear();
         hits.file_header = Rect::default();
+        hits.file_open_dir = Rect::default();
         hits.endpoint_agents.clear();
         hits.tab_scroll_left = Rect::default();
         hits.tab_scroll_right = Rect::default();

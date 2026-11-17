@@ -37,6 +37,11 @@ pub(crate) struct FileTree {
     listings: HashMap<PathBuf, Vec<FileEntry>>,
     /// Git state per changed path under `root`, plus each ancestor folder (strongest wins).
     git: HashMap<PathBuf, GitMark>,
+    /// Git runs on a worker thread; its marks land here for the root they were made for.
+    git_job: Option<(
+        PathBuf,
+        std::sync::mpsc::Receiver<HashMap<PathBuf, GitMark>>,
+    )>,
     loaded_at: Option<Instant>,
 }
 
@@ -98,27 +103,76 @@ impl FileTree {
         }
         self.root = root;
         self.expanded.clear();
+        self.git.clear();
         self.reload();
         true
     }
 
     pub(super) fn reload(&mut self) {
         self.listings.clear();
-        self.git.clear();
         self.loaded_at = Some(Instant::now());
         let Some(root) = self.root.clone() else {
             return;
         };
-        self.git = git_marks(&root);
         self.expanded
             .retain(|dir| dir.starts_with(&root) && dir.is_dir());
-        let dirs = std::iter::once(root)
+        let dirs = std::iter::once(root.clone())
             .chain(self.expanded.iter().cloned())
             .collect::<Vec<_>>();
         for dir in dirs {
             let entries = read_dir_sorted(&dir);
             self.listings.insert(dir, entries);
         }
+        self.start_git_job(root);
+    }
+
+    /// Every repo the tree shows: the one holding the root, plus listed folders that are
+    /// repos themselves (a root like `~/projects` holds several).
+    fn start_git_job(&mut self, root: PathBuf) {
+        if self.git_job.is_some() {
+            return;
+        }
+        let nested = self
+            .listings
+            .values()
+            .flatten()
+            .filter(|entry| entry.is_dir && entry.path.join(".git").exists())
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let job_root = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(git_marks(&job_root, &nested));
+        });
+        self.git_job = Some((root, receiver));
+    }
+
+    /// Picks up finished git marks and refreshes on schedule even when no snapshot
+    /// arrives. Returns whether the panel needs a repaint.
+    pub(super) fn tick(&mut self) -> bool {
+        let mut changed = false;
+        if let Some((root, receiver)) = &self.git_job {
+            match receiver.try_recv() {
+                Ok(marks) => {
+                    if Some(root) == self.root.as_ref() && marks != self.git {
+                        self.git = marks;
+                        changed = true;
+                    }
+                    self.git_job = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.git_job = None,
+            }
+        }
+        if self.root.is_some()
+            && self
+                .loaded_at
+                .is_some_and(|loaded| loaded.elapsed() >= REFRESH_INTERVAL)
+        {
+            self.reload();
+            changed = true;
+        }
+        changed
     }
 
     pub(super) fn toggle(&mut self, dir: &Path) {
@@ -192,31 +246,46 @@ fn read_dir_sorted(dir: &Path) -> Vec<FileEntry> {
     entries
 }
 
-// ponytail: three blocking git calls per reload (every 2s at most); move to a thread if a
-// huge repo makes the sidebar stutter.
-fn git_marks(root: &Path) -> HashMap<PathBuf, GitMark> {
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .arg("--no-optional-locks")
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-    };
-    // Status paths are repo-relative; the prefix maps them onto `root` without
-    // caring whether `root` was reached through a symlink.
-    let Some(prefix) = git(&["rev-parse", "--show-prefix"]) else {
-        return HashMap::new();
-    };
-    let status =
-        git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default();
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("--no-optional-locks")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Marks for the repo holding `root` and for each repo in `nested`, keyed by tree path.
+fn git_marks(root: &Path, nested: &[PathBuf]) -> HashMap<PathBuf, GitMark> {
+    let mut marks = HashMap::new();
+    // The prefix finds the repo top in the tree's own spelling of the path, even when
+    // `root` was reached through a symlink.
+    if let Some(prefix) = git(root, &["rev-parse", "--show-prefix"]) {
+        let depth = Path::new(prefix.trim_end()).components().count();
+        if let Some(top) = root.ancestors().nth(depth) {
+            add_repo_marks(top, root, &mut marks);
+        }
+    }
+    for repo in nested {
+        add_repo_marks(repo, root, &mut marks);
+    }
+    marks
+}
+
+fn add_repo_marks(top: &Path, root: &Path, marks: &mut HashMap<PathBuf, GitMark>) {
+    let status = git(
+        top,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )
+    .unwrap_or_default();
     // No upstream (or no commits) simply means no unpushed marks.
-    let unpushed = git(&["diff", "--name-only", "-z", "@{upstream}...HEAD"]).unwrap_or_default();
+    let unpushed =
+        git(top, &["diff", "--name-only", "-z", "@{upstream}...HEAD"]).unwrap_or_default();
     let mut changes = parse_status(&status);
     changes.extend(
         unpushed
@@ -224,12 +293,9 @@ fn git_marks(root: &Path) -> HashMap<PathBuf, GitMark> {
             .filter(|path| !path.is_empty())
             .map(|path| (path.to_string(), GitMark::Unpushed)),
     );
-    let mut marks = HashMap::new();
     for (path, mark) in changes {
-        let Some(relative) = path.strip_prefix(prefix.trim_end()) else {
-            continue;
-        };
-        let mut current = root.join(relative);
+        // The file and every folder above it, up to the tree's root.
+        let mut current = top.join(path);
         while current.starts_with(root) && current != root {
             let slot = marks.entry(current.clone()).or_insert(mark);
             *slot = (*slot).max(mark);
@@ -238,7 +304,6 @@ fn git_marks(root: &Path) -> HashMap<PathBuf, GitMark> {
             }
         }
     }
-    marks
 }
 
 /// `git status --porcelain=v1 -z` entries as (repo-relative path, mark).
@@ -265,9 +330,28 @@ fn parse_status(status: &str) -> Vec<(String, GitMark)> {
     changes
 }
 
-/// The focused pane's directory: where its foreground process runs, else its shell cwd.
+/// Pane token an agent hook reports its working directory under. Claude Code's `cd`
+/// moves only its own tracking, never the process cwd, so herdr cannot see it otherwise.
+const AGENT_CWD_TOKEN: &str = "fork_cwd";
+
+/// The focused pane's directory: where its agent says it works, else where its
+/// foreground process runs, else its shell cwd.
 pub(super) fn focused_pane_dir(snapshot: &ClientShellSnapshot) -> Option<PathBuf> {
     let focused = snapshot.focused_pane_id.as_deref()?;
+    let agent_dir = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == focused)
+        .and_then(|agent| {
+            agent
+                .tokens
+                .iter()
+                .find(|(name, _)| name == AGENT_CWD_TOKEN)
+        })
+        .map(|(_, dir)| PathBuf::from(dir));
+    if agent_dir.is_some() {
+        return agent_dir;
+    }
     let pane = snapshot.panes.iter().find(|pane| pane.pane_id == focused)?;
     pane.foreground_cwd
         .as_deref()
@@ -306,14 +390,18 @@ pub(super) fn render_file_panel(
             .add_modifier(Modifier::BOLD),
     );
     hits.file_header = Rect::new(area.x, area.y + 1, area.width, 1);
+    hits.file_open_dir = Rect::default();
     if let Some(name) = tree
         .root
         .as_deref()
         .and_then(Path::file_name)
         .map(|name| name.to_string_lossy())
     {
-        let room = area.width.saturating_sub(8) as usize;
-        let label = crate::ui::truncate_end(&name, room);
+        // The folder name plus `↗` is one button: open the folder in the file manager.
+        let room = area.width.saturating_sub(10) as usize;
+        let label = format!("{} ↗ ", crate::ui::truncate_end(&name, room));
+        let width = render::display_width(&label).min(area.width);
+        let button = Rect::new(area.right().saturating_sub(width), area.y + 1, width, 1);
         render::put_right_text(
             buffer,
             area,
@@ -321,6 +409,10 @@ pub(super) fn render_file_panel(
             &label,
             Style::default().fg(palette.overlay0),
         );
+        if let Some(arrow) = buffer.cell_mut((button.right().saturating_sub(2), button.y)) {
+            arrow.set_fg(palette.accent);
+        }
+        hits.file_open_dir = button;
     }
 
     let body = Rect::new(
@@ -482,11 +574,21 @@ impl ClientShellState {
         }
     }
 
+    pub(crate) fn tick_file_tree(&mut self) -> bool {
+        self.file_tree.tick()
+    }
+
     pub(super) fn handle_file_click(
         &mut self,
         point: (u16, u16),
         outcome: &mut ClientShellInput,
     ) -> bool {
+        if super::contains(self.hits.file_open_dir, point) {
+            if let Some(root) = self.file_tree.root.clone() {
+                outcome.actions.push(ClientShellAction::OpenLocalPath(root));
+            }
+            return true;
+        }
         if super::contains(self.hits.file_header, point) {
             self.file_tree.reload();
             outcome.repaint = true;
@@ -696,7 +798,7 @@ mod tests {
         }
         std::fs::write(work.join("src/lib.rs"), "a").unwrap();
         let file = work.join("src/lib.rs");
-        let mark = |path: &Path| git_marks(&work).get(path).copied();
+        let mark = |path: &Path| git_marks(&work, &[]).get(path).copied();
 
         assert_eq!(mark(&file), Some(GitMark::Untracked));
         assert_eq!(mark(&work.join("src")), Some(GitMark::Untracked));
@@ -712,9 +814,13 @@ mod tests {
         assert_eq!(mark(&file), Some(GitMark::Unpushed));
         // A folder opened as the root still maps repo-relative paths onto itself.
         assert_eq!(
-            git_marks(&work.join("src")).get(&file).copied(),
+            git_marks(&work.join("src"), &[]).get(&file).copied(),
             Some(GitMark::Unpushed)
         );
+        // A root that is no repo itself, holding repos, still shows their changes.
+        let outside = git_marks(&base, std::slice::from_ref(&work));
+        assert_eq!(outside.get(&file).copied(), Some(GitMark::Unpushed));
+        assert_eq!(outside.get(&work).copied(), Some(GitMark::Unpushed));
         assert!(run(&work, &["push", "-q"]));
         assert_eq!(mark(&file), None);
         std::fs::remove_dir_all(&base).unwrap();
