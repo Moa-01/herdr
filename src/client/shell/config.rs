@@ -68,6 +68,7 @@ impl ClientShellState {
             collapsed_groups,
             remote_collapsed_groups,
             collapsed_agent_workspaces,
+            files_follow_space: self.file_tree.follow_space,
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

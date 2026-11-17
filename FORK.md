@@ -16,7 +16,8 @@ Stock herdr plus a foldable, workspace-grouped agent panel. Work lives on the
   Click the `files` title to refresh; it also refreshes every few seconds. Click the
   folder name with `↗` at the right of the title to open it in the system file manager
   (`xdg-open` on Linux, Explorer on Windows, Finder on macOS).
-- For an agent pane the panel follows the agent's working directory when the agent
+- `⇄ claude` / `⇄ space` next to the `files` title switches what the panel follows
+  (remembered across restarts). In `claude` mode, for an agent pane the panel follows the agent's working directory when the agent
   reports it as the `fork_cwd` pane token, since Claude Code's `cd` never moves its
   process cwd. Claude Code reports it with a hook (`~/.claude/hooks/herdr-cwd.sh` on
   SessionStart, UserPromptSubmit, Stop and PostToolUse/Bash; needs `jq`):

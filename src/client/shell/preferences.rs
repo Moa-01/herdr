@@ -30,6 +30,9 @@ pub(super) struct ClientChromePreferences {
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) collapsed_agent_workspaces: Vec<String>,
+    /// fork: the files panel shows the space's directory instead of the agent's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) files_follow_space: bool,
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {

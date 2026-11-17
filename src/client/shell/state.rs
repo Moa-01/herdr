@@ -101,6 +101,7 @@ pub(super) struct ShellHitMap {
     pub(super) files: Vec<(Rect, std::path::PathBuf, bool)>,
     pub(super) file_header: Rect,
     pub(super) file_open_dir: Rect,
+    pub(super) file_mode_toggle: Rect,
     pub(super) file_body: Rect,
     pub(super) file_max_scroll: usize,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
@@ -1077,7 +1078,11 @@ impl ClientShellState {
                 .collapsed_agent_workspaces
                 .into_iter()
                 .collect(),
-            file_tree: Default::default(),
+            file_tree: {
+                let mut tree = file_tree::FileTree::default();
+                tree.follow_space = preferences.files_follow_space;
+                tree
+            },
             file_scroll: 0,
             workspace_scroll: 0,
             agent_scroll: 0,

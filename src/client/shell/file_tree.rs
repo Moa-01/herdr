@@ -43,6 +43,9 @@ pub(crate) struct FileTree {
         std::sync::mpsc::Receiver<HashMap<PathBuf, GitMark>>,
     )>,
     loaded_at: Option<Instant>,
+    /// Show the space's directory (the pane's own cwd) even when an agent in the
+    /// focused pane reports working somewhere else.
+    pub(super) follow_space: bool,
 }
 
 /// Where a changed file sits on its way to the remote; ordered weakest to strongest.
@@ -334,13 +337,17 @@ fn parse_status(status: &str) -> Vec<(String, GitMark)> {
 /// moves only its own tracking, never the process cwd, so herdr cannot see it otherwise.
 const AGENT_CWD_TOKEN: &str = "fork_cwd";
 
-/// The focused pane's directory: where its agent says it works, else where its
-/// foreground process runs, else its shell cwd.
-pub(super) fn focused_pane_dir(snapshot: &ClientShellSnapshot) -> Option<PathBuf> {
+/// The focused pane's directory: where its agent says it works (unless `follow_space`),
+/// else where its foreground process runs, else its shell cwd.
+pub(super) fn focused_pane_dir(
+    snapshot: &ClientShellSnapshot,
+    follow_space: bool,
+) -> Option<PathBuf> {
     let focused = snapshot.focused_pane_id.as_deref()?;
     let agent_dir = snapshot
         .agents
         .iter()
+        .filter(|_| !follow_space)
         .find(|agent| agent.pane_id == focused)
         .and_then(|agent| {
             agent
@@ -390,6 +397,18 @@ pub(super) fn render_file_panel(
             .add_modifier(Modifier::BOLD),
     );
     hits.file_header = Rect::new(area.x, area.y + 1, area.width, 1);
+    // Which directory the panel follows; click to switch.
+    let mode = if tree.follow_space { "space" } else { "claude" };
+    let toggle_x = area.x + 7;
+    let toggle_end = render::put_segment(
+        buffer,
+        toggle_x,
+        area.y + 1,
+        area.right(),
+        &format!("⇄ {mode}"),
+        Style::default().fg(palette.accent),
+    );
+    hits.file_mode_toggle = Rect::new(toggle_x, area.y + 1, toggle_end.saturating_sub(toggle_x), 1);
     hits.file_open_dir = Rect::default();
     if let Some(name) = tree
         .root
@@ -398,7 +417,7 @@ pub(super) fn render_file_panel(
         .map(|name| name.to_string_lossy())
     {
         // The folder name plus `↗` is one button: open the folder in the file manager.
-        let room = area.width.saturating_sub(10) as usize;
+        let room = area.width.saturating_sub(19) as usize;
         let label = format!("{} ↗ ", crate::ui::truncate_end(&name, room));
         let width = render::display_width(&label).min(area.width);
         let button = Rect::new(area.right().saturating_sub(width), area.y + 1, width, 1);
@@ -567,7 +586,7 @@ impl ClientShellState {
             .snapshot
             .as_deref()
             .filter(|_| self.active_endpoint_id.is_local())
-            .and_then(focused_pane_dir)
+            .and_then(|snapshot| focused_pane_dir(snapshot, self.file_tree.follow_space))
             .filter(|dir| dir.is_dir());
         if self.file_tree.set_root(root) {
             self.file_scroll = 0;
@@ -587,6 +606,13 @@ impl ClientShellState {
             if let Some(root) = self.file_tree.root.clone() {
                 outcome.actions.push(ClientShellAction::OpenLocalPath(root));
             }
+            return true;
+        }
+        if super::contains(self.hits.file_mode_toggle, point) {
+            self.file_tree.follow_space = !self.file_tree.follow_space;
+            self.sync_file_tree();
+            self.persist_chrome_preferences(outcome);
+            outcome.repaint = true;
             return true;
         }
         if super::contains(self.hits.file_header, point) {
@@ -824,6 +850,39 @@ mod tests {
         assert!(run(&work, &["push", "-q"]));
         assert_eq!(mark(&file), None);
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn panel_follows_the_agent_dir_unless_set_to_the_space() {
+        let mut snapshot = super::super::tests::snapshot();
+        assert_eq!(
+            focused_pane_dir(&snapshot, false),
+            Some(PathBuf::from("/repo"))
+        );
+        snapshot.agents.push(crate::protocol::ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: None,
+            display_agent: None,
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: crate::api::schema::AgentStatus::Idle,
+            state_change_seq: 0,
+            state_labels: Vec::new(),
+            tokens: vec![(AGENT_CWD_TOKEN.into(), "/repo/api".into())],
+            focused: true,
+        });
+        assert_eq!(
+            focused_pane_dir(&snapshot, false),
+            Some(PathBuf::from("/repo/api"))
+        );
+        assert_eq!(
+            focused_pane_dir(&snapshot, true),
+            Some(PathBuf::from("/repo"))
+        );
     }
 
     #[test]
