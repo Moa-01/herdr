@@ -246,4 +246,4 @@ jobs:
           path: |
             herdr-windows-x86_64.zip
             BUILD_INFO.txt
-          retention-days: 7
+          retention-days: 90 # fork: others install Windows builds from here (fork-setup/install.ps1)

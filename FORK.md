@@ -1,43 +1,14 @@
 # Moa-01/herdr fork
 
-Stock herdr plus a foldable, workspace-grouped agent panel. Work lives on the
+Stock herdr plus sidebar features (foldable agent groups, space tints, files panel). Work lives on the
 `sidebar-fold` branch; `master` mirrors upstream.
 
-- Workspace headers in the agent panel (grouped sort). Click a header or press
-  `prefix+f` (`keys.toggle_agent_group`) to fold it to one summary line.
-- Folded workspaces count as one stop for next/previous agent.
-- Fold state is remembered across restarts.
-- Each space gets a background tint; its agent rows share it (stronger on focus).
-- The spaces section sizes to its content, capped by the dragged divider.
-- A files panel under the agents lists the focused pane's directory. Click a folder
-  to expand it, click a file to open it in `$VISUAL`/`$EDITOR` (default `vi`; on
-  Windows/PowerShell, `edit`, else `notepad`) beside the focused pane, or in a new tab
-  when a split would leave a half under 60 columns.
-  Click the `files` title to refresh; it also refreshes every few seconds. Click the
-  folder name with `↗` at the right of the title to open it in the system file manager
-  (`xdg-open` on Linux, Explorer on Windows, Finder on macOS).
-- `⇄ claude` / `⇄ space` next to the `files` title switches what the panel follows
-  (remembered across restarts). In `claude` mode, for an agent pane the panel follows the agent's working directory when the agent
-  reports it as the `fork_cwd` pane token, since Claude Code's `cd` never moves its
-  process cwd. Claude Code reports it with a hook (`~/.claude/hooks/herdr-cwd.sh` on
-  SessionStart, UserPromptSubmit, Stop and PostToolUse/Bash; needs `jq`):
+**Using the fork (features, keys, install, Claude Code hook): see
+[fork-setup/README.md](fork-setup/README.md).**
 
-  ```sh
-  cwd=$(jq -r '.cwd // empty') && [ -n "$cwd" ] &&
-    herdr pane report-metadata "$HERDR_PANE_ID" --source fork:cwd --token "fork_cwd=$cwd"
-  ```
+The rest of this file is for maintaining the fork itself.
 
-  A server handoff drops reported tokens, so the update script runs
-  `herdr-cwd.sh backfill` afterwards: it reads each Claude pane's last `cwd` from its
-  transcript and reports it again.
-- Files are colored by git state, with a letter on the right (folders get a dot in
-  the color of their most urgent change): yellow `M` modified and not staged, green
-  `U` untracked, teal `S` staged, blue `↑` committed but not pushed, red `!` merge
-  conflict. Once the commit is pushed, the file goes back to its normal color.
-  This covers the repo holding the folder and every listed subfolder that is a repo
-  of its own. Git runs off the UI thread.
-
-## Updating
+## Updating the fork (maintainer)
 
 Do not run `herdr update`: it replaces this build with stock herdr.
 
