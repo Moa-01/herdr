@@ -1716,21 +1716,90 @@ fn grouped_agents_snapshot() -> ClientShellSnapshot {
 }
 
 #[test]
+fn agent_panel_nests_forks_and_lists_running_subagents() {
+    use super::super::agent_sidebar::{agent_panel_entries, AgentPanelEntry};
+    use super::super::agent_tree::{AgentTree, Subagent};
+    let grouped = grouped_agents_snapshot();
+    let config = ClientShellConfig::from_config(&Config::default());
+    // pane_3 was forked from pane_2 (same space); pane_1 runs an Explore subagent.
+    let tree = AgentTree::with(
+        vec![(
+            "pane_1",
+            vec![Subagent {
+                kind: "Explore".into(),
+                description: "find the hook".into(),
+                depth: 1,
+            }],
+        )],
+        vec![("pane_3", "pane_2"), ("pane_2", "pane_9")],
+    );
+    let shape = agent_panel_entries(&grouped, &config, &HashSet::new(), &tree)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            AgentPanelEntry::Agent(row) => Some(format!(
+                "{}:{}:{}",
+                row.pane_id,
+                row.nest,
+                row.subagents.len()
+            )),
+            AgentPanelEntry::Group(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shape, ["pane_1:0:1", "pane_2:0:0", "pane_3:1:0"]);
+
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 20));
+    let mut scroll = 0;
+    let mut hits = ShellHitMap::default();
+    super::super::render::render_agent_panel(
+        &mut buffer,
+        Rect::new(0, 0, 40, 20),
+        &grouped,
+        &config,
+        &HashSet::new(),
+        &tree,
+        &mut scroll,
+        &mut hits,
+    );
+    let lines = (0..20)
+        .map(|y| {
+            (0..40)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("└ Explore find the hook")),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.trim_start().starts_with('⑂')),
+        "{lines:#?}"
+    );
+}
+
+#[test]
 fn agent_panel_groups_agents_under_folding_workspace_headers() {
     use super::super::agent_sidebar::{agent_panel_entries, AgentPanelEntry};
     let grouped = grouped_agents_snapshot();
     let config = ClientShellConfig::from_config(&Config::default());
     let shape = |collapsed: &HashSet<String>| {
-        agent_panel_entries(&grouped, &config, collapsed)
-            .into_iter()
-            .map(|entry| match entry {
-                AgentPanelEntry::Group(header) => format!(
-                    "{}:{}:{}:{}",
-                    header.label, header.collapsed, header.agents, header.waiting
-                ),
-                AgentPanelEntry::Agent(row) => row.pane_id,
-            })
-            .collect::<Vec<_>>()
+        agent_panel_entries(
+            &grouped,
+            &config,
+            collapsed,
+            &super::super::agent_tree::AgentTree::default(),
+        )
+        .into_iter()
+        .map(|entry| match entry {
+            AgentPanelEntry::Group(header) => format!(
+                "{}:{}:{}:{}",
+                header.label, header.collapsed, header.agents, header.waiting
+            ),
+            AgentPanelEntry::Agent(row) => row.pane_id,
+        })
+        .collect::<Vec<_>>()
     };
 
     assert_eq!(

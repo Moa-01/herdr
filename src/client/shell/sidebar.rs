@@ -297,6 +297,7 @@ pub(crate) fn render_sidebar(
         snapshot,
         config,
         state.collapsed_agent_workspaces,
+        state.agent_tree,
     );
     let file_tree = state.file_tree.filter(|tree| tree.root.is_some());
     let (workspace_area, detail_area, file_area) = local_sidebar_sections(
@@ -506,6 +507,7 @@ pub(crate) fn render_sidebar(
         snapshot,
         config,
         state.collapsed_agent_workspaces,
+        state.agent_tree,
         state.agent_scroll,
         hits,
     );

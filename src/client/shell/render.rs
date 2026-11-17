@@ -238,6 +238,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) collapsed_agent_workspaces: &'a HashSet<String>,
     pub(super) file_tree: Option<&'a super::file_tree::FileTree>,
+    pub(super) agent_tree: &'a super::agent_tree::AgentTree,
     pub(super) file_scroll: &'a mut usize,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,

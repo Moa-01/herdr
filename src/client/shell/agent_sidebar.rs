@@ -16,6 +16,10 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// fork: how deep this session sits under the session it was forked from.
+    pub(super) nest: usize,
+    /// fork: subagents running in this session, one line each under the row.
+    pub(super) subagents: Vec<super::agent_tree::Subagent>,
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -56,6 +60,7 @@ pub(super) fn render_agent_panel(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     collapsed: &HashSet<String>,
+    tree: &super::agent_tree::AgentTree,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
@@ -69,7 +74,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let entries = agent_panel_entries(snapshot, config, collapsed);
+    let entries = agent_panel_entries(snapshot, config, collapsed, tree);
     let palette = &config.palette;
     let grouped = entries
         .iter()
@@ -107,7 +112,14 @@ pub(super) fn render_agent_panel(
                     palette,
                     row.focused,
                 );
-                render_agent_row(buffer, rect, row, config, if grouped { 2 } else { 0 }, tint);
+                let indent = if grouped { 2 } else { 0 } + 2 * row.nest;
+                render_agent_row(buffer, rect, row, config, indent, tint);
+                if row.nest > 0 {
+                    // A forked session hangs under the session it was forked from.
+                    if let Some(cell) = buffer.cell_mut((rect.x + indent as u16 - 1, rect.y)) {
+                        cell.set_char('⑂').set_fg(palette.overlay0);
+                    }
+                }
             }
         },
     );
@@ -116,7 +128,7 @@ pub(super) fn render_agent_panel(
 fn agent_entry_lines(entry: &AgentPanelEntry) -> usize {
     match entry {
         AgentPanelEntry::Group(header) => 1 + usize::from(!header.first),
-        AgentPanelEntry::Agent(row) => row.rows.len(),
+        AgentPanelEntry::Agent(row) => row.rows.len().max(1) + row.subagents.len(),
     }
 }
 
@@ -125,8 +137,9 @@ pub(super) fn agent_panel_height(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     collapsed: &HashSet<String>,
+    tree: &super::agent_tree::AgentTree,
 ) -> u16 {
-    let entries = agent_panel_entries(snapshot, config, collapsed);
+    let entries = agent_panel_entries(snapshot, config, collapsed, tree);
     let lines = entries
         .iter()
         .map(|entry| agent_entry_lines(entry).max(1))
@@ -157,8 +170,12 @@ pub(super) fn agent_panel_entries(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     collapsed: &HashSet<String>,
+    tree: &super::agent_tree::AgentTree,
 ) -> Vec<AgentPanelEntry> {
-    let rows = agent_rows(snapshot, config, None);
+    let mut rows = agent_rows(snapshot, config, None);
+    for row in &mut rows {
+        row.subagents = tree.subagents(&row.pane_id).to_vec();
+    }
     if config.agent_panel_sort != crate::config::AgentPanelSortConfig::Spaces
         || snapshot.agent_view_label.is_some()
     {
@@ -172,6 +189,7 @@ pub(super) fn agent_panel_entries(
         while let Some(row) = rows.next_if(|row| row.workspace_id == workspace_id) {
             group.push(row);
         }
+        let group = nest_forks(group, tree);
         let folded = collapsed.contains(&workspace_id);
         let label = snapshot
             .workspaces
@@ -196,6 +214,46 @@ pub(super) fn agent_panel_entries(
         }
     }
     entries
+}
+
+/// Puts each forked session right after the session it was forked from (when both are
+/// in the group), one level deeper.
+fn nest_forks(group: Vec<AgentRow>, tree: &super::agent_tree::AgentTree) -> Vec<AgentRow> {
+    fn place(
+        mut row: AgentRow,
+        depth: usize,
+        children: &mut HashMap<String, Vec<AgentRow>>,
+        out: &mut Vec<AgentRow>,
+    ) {
+        let pane_id = row.pane_id.clone();
+        row.nest = depth;
+        out.push(row);
+        for child in children.remove(&pane_id).unwrap_or_default() {
+            place(child, depth + 1, children, out);
+        }
+    }
+    let in_group = group
+        .iter()
+        .map(|row| row.pane_id.clone())
+        .collect::<HashSet<_>>();
+    let mut children: HashMap<String, Vec<AgentRow>> = HashMap::new();
+    let mut roots = Vec::new();
+    for row in group {
+        match tree
+            .fork_parent(&row.pane_id)
+            .filter(|parent| in_group.contains(*parent))
+        {
+            Some(parent) => children.entry(parent.to_owned()).or_default().push(row),
+            None => roots.push(row),
+        }
+    }
+    let mut out = Vec::new();
+    for root in roots {
+        place(root, 0, &mut children, &mut out);
+    }
+    // Sessions forked from each other in a loop never reach a root; keep them flat.
+    out.extend(children.into_values().flatten());
+    out
 }
 
 /// Navigation stops in panel order: every visible agent, and one stop per folded
@@ -509,6 +567,8 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        nest: 0,
+        subagents: Vec::new(),
     })
 }
 
@@ -568,6 +628,38 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
+    }
+    // fork: running subagents as a tree under the session.
+    for (index, subagent) in row.subagents.iter().enumerate() {
+        let y = rect.y + (rows.len() + index) as u16;
+        if y >= rect.bottom() {
+            break;
+        }
+        let last = row.subagents[index + 1..]
+            .iter()
+            .take_while(|next| next.depth >= subagent.depth)
+            .all(|next| next.depth > subagent.depth);
+        let indent = group_indent + 1 + 2 * subagent.depth;
+        let kind = if subagent.kind == "fork" {
+            "⑂ fork".to_string()
+        } else {
+            subagent.kind.clone()
+        };
+        let used = indent + 2 + display_width(&kind) + 1;
+        let description = crate::ui::truncate_end(
+            &subagent.description,
+            (rect.width as usize).saturating_sub(used),
+        );
+        let spans = vec![
+            ratatui::text::Span::raw(" ".repeat(indent)),
+            ratatui::text::Span::styled(if last { "└ " } else { "├ " }, secondary),
+            ratatui::text::Span::styled(kind, Style::default().fg(palette.mauve)),
+            ratatui::text::Span::raw(" "),
+            ratatui::text::Span::styled(description, secondary),
+        ];
+        Paragraph::new(Line::from(spans))
+            .style(row_style)
+            .render(Rect::new(rect.x, y, rect.width, 1), buffer);
     }
 }
 

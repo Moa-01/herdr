@@ -15,6 +15,8 @@ on whatever prefix you already have.
 | --- | --- |
 | Agents grouped under their space, foldable | Click a space header in the agent panel, or press `prefix+f` |
 | Each space gets its own background tint; its agents share it | Automatic |
+| Claude subagents as a tree under their session (`└ Explore find the hook`) | Automatic while they run (needs the Claude Code hook) |
+| A forked Claude session sits under the session it came from, marked `⑂` | Automatic when both are in the same space (needs the hook) |
 | The spaces section grows with the number of spaces, up to the divider | Drag the divider to change the cap |
 | Files panel under the agents (the focused pane's folder as a tree) | Click a folder to expand it. Click a file to open it in `$VISUAL`/`$EDITOR` beside the pane, or in a new tab when there is no room |
 | Git colors in the files panel | yellow `M` changed, green `U` new, teal `S` staged, blue `↑` committed but not pushed, red `!` conflict. Folders get a dot |
@@ -101,7 +103,7 @@ workflow with `build_group=windows`, and install with
 
 To update, `git pull` in `$HOME\herdr-fork`, quit herdr, and run `install.ps1` again.
 
-## The Claude Code hook: how the files panel finds Claude's folder
+## The Claude Code hook: how herdr sees Claude's folder, subagents and forks
 
 When Claude runs `cd`, it only updates its own record of the folder. The Claude
 process itself never moves, so herdr would always see the folder Claude started in.
@@ -110,11 +112,21 @@ The hook reports Claude's real folder to herdr instead:
 1. Claude Code runs the hook at session start, on every prompt, at the end of every
    turn, and after every Bash command. Each time, it passes JSON that includes
    Claude's current `cwd`.
-2. The hook stores that folder on Claude's pane as the `fork_cwd` value, with
-   `herdr pane report-metadata <pane> --source fork:cwd --token fork_cwd=<cwd>`.
-   herdr doesn't display this value anywhere.
+2. The hook stores two values on Claude's pane: the folder as `fork_cwd` and the
+   transcript path as `fork_transcript`, with
+   `herdr pane report-metadata <pane> --source fork:cwd --token fork_cwd=<cwd> --token fork_transcript=<path>`.
+   herdr doesn't display these values anywhere. Hook calls made from inside a
+   subagent are skipped, so a subagent's `cd` doesn't move the panel.
 3. In `⇄ claude` mode, the files panel uses `fork_cwd` when the focused pane has one.
    Otherwise it uses the pane's own folder, which is what `⇄ space` always uses.
+4. Every 2 seconds the agent panel reads, in the background, the files next to each
+   `fork_transcript`:
+   - `<session>/subagents/*.meta.json` lists the session's subagents. A subagent shows
+     while it isn't marked `finished`, and only if its transcript changed in the last
+     10 minutes (one killed with its session never gets marked).
+   - A forked session's transcript starts with lines copied from its parent, and only
+     copied lines carry a `requestSessionId`. The last one names the parent. Each
+     transcript is read once, then only its new lines.
 
 The hook only does anything inside herdr: when `HERDR_ENV=1` and `HERDR_PANE_ID` is
 set. Everywhere else it exits without doing anything.

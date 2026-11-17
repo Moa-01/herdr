@@ -899,6 +899,7 @@ pub(crate) struct ClientShellState {
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) collapsed_agent_workspaces: HashSet<String>,
     pub(super) file_tree: super::file_tree::FileTree,
+    pub(super) agent_tree: super::agent_tree::AgentTree,
     pub(super) file_scroll: usize,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
@@ -1084,6 +1085,7 @@ impl ClientShellState {
                 tree
             },
             file_scroll: 0,
+            agent_tree: Default::default(),
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
