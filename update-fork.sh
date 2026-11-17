@@ -42,6 +42,10 @@ git push origin "$BRANCH"
 # --import-exe: the running server's own exe was just replaced (shows as "(deleted)"),
 # so point the handoff at the new binary explicitly.
 herdr server live-handoff --import-exe "$BIN"
+# The handoff drops reported pane tokens; restore each Claude pane's working directory
+# for the files panel (see FORK.md).
+CWD_HOOK="$HOME/.claude/hooks/herdr-cwd.sh"
+[ -f "$CWD_HOOK" ] && sh "$CWD_HOOK" backfill || true
 echo
 echo "installed $(herdr --version) (previous kept at $BIN-previous)"
 echo "reconnect your window to load the new sidebar: ctrl+j q, then herdr"

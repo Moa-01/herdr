@@ -19,12 +19,16 @@ Stock herdr plus a foldable, workspace-grouped agent panel. Work lives on the
 - For an agent pane the panel follows the agent's working directory when the agent
   reports it as the `fork_cwd` pane token, since Claude Code's `cd` never moves its
   process cwd. Claude Code reports it with a hook (`~/.claude/hooks/herdr-cwd.sh` on
-  SessionStart and PostToolUse/Bash, needs `jq`):
+  SessionStart, UserPromptSubmit, Stop and PostToolUse/Bash; needs `jq`):
 
   ```sh
   cwd=$(jq -r '.cwd // empty') && [ -n "$cwd" ] &&
     herdr pane report-metadata "$HERDR_PANE_ID" --source fork:cwd --token "fork_cwd=$cwd"
   ```
+
+  A server handoff drops reported tokens, so the update script runs
+  `herdr-cwd.sh backfill` afterwards: it reads each Claude pane's last `cwd` from its
+  transcript and reports it again.
 - Files are colored by git state, with a letter on the right (folders get a dot in
   the color of their most urgent change): yellow `M` modified and not staged, green
   `U` untracked, teal `S` staged, blue `↑` committed but not pushed, red `!` merge
